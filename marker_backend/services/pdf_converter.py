@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Tuple
 import tempfile
 import shutil
-from ..core.config import TEMP_DIR, OUTPUTS_DIR
+from ..core.config import TEMP_DIR, OUTPUTS_DIR, PDF2IMAGE_DIR
 from ..core.logger import get_logger
 from ..core.exceptions import MarkerError
 
@@ -184,11 +184,20 @@ def convert_pdf_and_process(
 ) -> Path:
     """Main workflow: convert PDF to images, process each with marker_single, combine results.
     
+    Outputs are organized hierarchically:
+    - OUTPUTS_DIR/{pdf_filename}/
+        - {pdf_filename}.md (combined markdown)
+        - {pdf_filename}_page_0001/
+            - {pdf_filename}_page_0001.md
+            - {pdf_filename}_page_0001_meta.json
+        - {pdf_filename}_page_0002/
+            - ...
+    
     Args:
         pdf_path: Path to input PDF file
-        output_dir: Directory for final markdown output (defaults to OUTPUTS_DIR)
-        keep_images: If True, preserve extracted images; otherwise delete after processing
-        temp_image_subdir: Subdirectory in TEMP_DIR for intermediate images 
+        output_dir: Directory for document folder (defaults to OUTPUTS_DIR)
+        keep_images: If True, preserve extracted images in PDF2IMAGE_DIR; otherwise delete after processing
+        temp_image_subdir: Subdirectory in PDF2IMAGE_DIR for intermediate images 
                           (defaults to "{pdf_stem}_images")
     
     Returns:
@@ -203,7 +212,10 @@ def convert_pdf_and_process(
     if temp_image_subdir is None:
         temp_image_subdir = f"{pdf_path.stem}_images"
     
-    temp_image_dir = TEMP_DIR / temp_image_subdir
+    # Images stored in PDF2IMAGE_DIR instead of TEMP_DIR
+    temp_image_dir = PDF2IMAGE_DIR / temp_image_subdir
+    # Document-specific output folder
+    doc_output_dir = output_dir / pdf_path.stem
     image_paths = []  # Initialize to prevent UnboundLocalError in except block
     
     try:
@@ -234,11 +246,12 @@ def convert_pdf_and_process(
         logger.info(f"Combining content from {len(contents)} processed images")
         combined_content = _combine_markdown_content(contents, pdf_path.name)
         
-        # Step 4: Save combined markdown
-        output_path = output_dir / f"{pdf_path.stem}.md"
+        # Step 4: Save combined markdown inside document folder
+        doc_output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = doc_output_dir / f"{pdf_path.stem}.md"
         final_path = _save_combined_markdown(combined_content, output_path)
         
-        # Step 5: Cleanup temporary images
+        # Step 5: Cleanup temporary images (if not keeping)
         _cleanup_temp_images(image_paths, keep_images=keep_images)
         
         logger.info(f"PDF conversion workflow completed successfully. Output: {final_path}")
