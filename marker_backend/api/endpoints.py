@@ -35,9 +35,12 @@ async def upload_pdf(file: UploadFile = File(...)):
             logger.info(f"PDF detected, using conversion workflow: {saved_path}")
             output = convert_pdf_and_process(saved_path, output_dir=OUTPUTS_DIR, keep_images=False)
         else:
-            # Direct processing for images
+            # Direct processing for images - organize by filename in outputs
             logger.info(f"Image detected, processing directly with marker_single: {saved_path}")
-            output = run_marker_for_chunk(saved_path)
+            # Create a directory for this image's output (similar to PDF structure)
+            img_output_dir = OUTPUTS_DIR / saved_path.stem
+            img_output_dir.mkdir(parents=True, exist_ok=True)
+            output = run_marker_for_chunk(saved_path, output_dir=img_output_dir)
         
         logger.info(f"Processing produced output file: {output}")    
     

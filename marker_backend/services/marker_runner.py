@@ -20,13 +20,129 @@ import os
 logger = get_logger(__name__)
 
 
-def _expected_output_for(input_path: Path) -> Path:
-    # Marker may name outputs differently; we standardize to input stem + .md in OUTPUTS_DIR
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    return OUTPUTS_DIR / f"{input_path.stem}.md"
+def run_marker_for_chunk(chunk_path: Path, output_dir: Path = None) -> Path:
+    """Run marker on a chunk (image or PDF) and return path to markdown output.
+    
+    Args:
+        chunk_path: Path to the input file (image or PDF)
+        output_dir: Directory where marker should save outputs. 
+                   If None, uses MARKER_OUTPUT_DIR from config.
+    
+    Returns:
+        Path to the extracted markdown file
+    
+    Raises:
+        MarkerError: If marker processing fails
+    """
+    if output_dir is None:
+        output_dir = OUTPUTS_DIR
+    
+    out_path = output_dir / f"{chunk_path.stem}.md"
 
+    # If CUDA_VISIBLE_DEVICES is set in env, respect it; otherwise use system default
+    env = os.environ.copy()
 
-def _query_nvidia_smi() -> List[Tuple[int, int, int, int]]:
+    # Wait for GPU to be in a safe state before launching heavy processing
+    try:
+        wait_for_gpu_ready()
+    except MarkerError:
+        # re-raise to stop processing
+        raise
+
+    # Build command with custom output directory
+    cmd = [MARKER_CLI, str(chunk_path), "--output_dir", str(output_dir)] + [
+        flag for flag in MARKER_FLAGS if "--output_dir" not in flag
+    ]
+
+    logger.info(f"Starting Marker for {chunk_path} with cmd: {' '.join(shlex.quote(p) for p in cmd)}")
+    start = time.time()
+    res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    duration = time.time() - start
+
+    # Log summary info at INFO and full outputs at DEBUG so app.log captures details
+    logger.info(
+        "Marker finished for %s (exit=%s) in %.2fs",
+        chunk_path,
+        res.returncode,
+        duration,
+    )
+    logger.debug("Marker stdout for %s:\n%s", chunk_path, res.stdout or "<no stdout>")
+    logger.debug("Marker stderr for %s:\n%s", chunk_path, res.stderr or "<no stderr>")
+
+    if res.returncode != 0:
+        logger.error("Marker failed for %s (exit=%s). See stderr in logs.", chunk_path, res.returncode)
+        # ensure stderr is available in the exception message for immediate feedback
+        raise MarkerError(f"Marker failed for {chunk_path}: {res.stderr}")
+    
+    # If marker outputs to stdout or writes file elsewhere, try to discover the produced markdown.
+    # First, check the canonical out_path
+    if out_path.exists():
+        return out_path
+
+    logger.debug("Expected output not found at canonical path; attempting discovery heuristics.")
+    
+    # Look for the markdown file in the output directory or as a directory with .md file inside
+    candidates = []
+    stem_pattern = f"{chunk_path.stem}*"
+
+    try:
+        candidates.extend(list(output_dir.glob(stem_pattern)))
+    except Exception:
+        logger.debug(f"Could not access output_dir: {output_dir}")
+
+    # Look in the input file's parent (where marker may have placed outputs)
+    try:
+        candidates.extend(list(chunk_path.parent.glob(stem_pattern)))
+    except Exception:
+        pass
+
+    # Look in current working directory
+    try:
+        candidates.extend(list(Path.cwd().glob(stem_pattern)))
+    except Exception:
+        pass
+
+    # Parse stdout/stderr for any .md path
+    text = (res.stdout or "") + "\n" + (res.stderr or "")
+    import re
+    md_paths = re.findall(r"[A-Za-z0-9_:\\/.\- ]+\.md", text)
+    for p in md_paths:
+        p = p.strip()
+        try:
+            pth = Path(p)
+            if pth.exists() and pth.is_file():
+                candidates.append(pth)
+        except Exception:
+            continue
+
+    # Deduplicate and sort by modification time (newest first)
+    unique = {}
+    for c in candidates:
+        try:
+            unique[str(c.resolve())] = c
+        except Exception:
+            unique[str(c)] = c
+
+    candidates = list(unique.values())
+    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+
+    if candidates:
+        chosen = candidates[0]
+        logger.info(f"Discovered Marker output at {chosen}")
+        
+        # If it's a directory, look for .md file inside
+        if chosen.is_dir():
+            md_files = list(chosen.glob("*.md"))
+            if md_files:
+                chosen = md_files[0]
+                logger.info(f"Found markdown file inside directory: {chosen}")
+        
+        if chosen.is_file() and chosen.suffix == ".md":
+            return chosen
+
+    # Nothing found
+    logger.error("Marker finished but no markdown output discovered; stdout/stderr below:\n%s", text)
+    raise MarkerError(f"Expected markdown output not found after Marker run for {chunk_path}")
     """Return list of tuples (index, temp_c, mem_total_mb, mem_used_mb) for each GPU.
     If nvidia-smi is not available or fails, return empty list.
     """
@@ -100,118 +216,4 @@ def wait_for_gpu_ready(timeout: int = GPU_WAIT_TIMEOUT_SEC, poll: int = GPU_POLL
         time.sleep(poll)
 
 
-def run_marker_for_chunk(chunk_path: Path) -> Path:
-    out_path = _expected_output_for(chunk_path)
-
-    # If CUDA_VISIBLE_DEVICES is set in env, respect it; otherwise use system default
-    env = os.environ.copy()
-
-    # Wait for GPU to be in a safe state before launching heavy processing
-    try:
-        wait_for_gpu_ready()
-    except MarkerError:
-        # re-raise to stop processing
-        raise
-
-    cmd = [MARKER_CLI, str(chunk_path)] + MARKER_FLAGS
-
-    logger.info(f"Starting Marker for {chunk_path} with cmd: {' '.join(shlex.quote(p) for p in cmd)}")
-    start = time.time()
-    res = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    duration = time.time() - start
-
-    # Log summary info at INFO and full outputs at DEBUG so app.log captures details
-    logger.info(
-        "Marker finished for %s (exit=%s) in %.2fs",
-        chunk_path,
-        res.returncode,
-        duration,
-    )
-    logger.debug("Marker stdout for %s:\n%s", chunk_path, res.stdout or "<no stdout>")
-    logger.debug("Marker stderr for %s:\n%s", chunk_path, res.stderr or "<no stderr>")
-
-    if res.returncode != 0:
-        logger.error("Marker failed for %s (exit=%s). See stderr in logs.", chunk_path, res.returncode)
-        # ensure stderr is available in the exception message for immediate feedback
-        raise MarkerError(f"Marker failed for {chunk_path}: {res.stderr}")
-    # If marker outputs to stdout or writes file elsewhere, try to discover the produced markdown.
-    # First, check the canonical out_path
-    if out_path.exists():
-        return out_path
-
-    logger.debug("Expected output not found at canonical path; attempting discovery heuristics.")
-    # 1) look in configured MARKER_OUTPUT_DIR
-    from ..core.config import MARKER_OUTPUT_DIR
-
-    candidates = []
-    stem_pattern = f"{chunk_path.stem}*"
-    # stem_pattern = f"{chunk_path.stem}*.md"
-
-    try:
-        candidates.extend(list(MARKER_OUTPUT_DIR.glob(stem_pattern)))
-    except Exception:
-        logger.debug(f"Could not access MARKER_OUTPUT_DIR: {MARKER_OUTPUT_DIR}")
-
-    # 2) look in the input file's parent (where marker may have placed outputs)
-    try:
-        candidates.extend(list(chunk_path.parent.glob(stem_pattern)))
-    except Exception:
-        pass
-
-    # 3) look in current working directory
-    try:
-        candidates.extend(list(Path.cwd().glob(stem_pattern)))
-    except Exception:
-        pass
-
-    # 4) parse stdout/stderr for any .md path
-    text = (res.stdout or "") + "\n" + (res.stderr or "")
-    import re
-    # md_paths = re.findall(r"[A-Za-z0-9_:\\/.\- ]+\.md", text)
-    md_paths = re.findall(r"[A-Za-z0-9_:\\/.\- ]+(?:\.md)?", text)
-    for p in md_paths:
-        p = p.strip()
-        try:
-            pth = Path(p)
-            if pth.exists() and pth.is_file():
-                candidates.append(pth)
-        except Exception:
-            continue
-
-    # Deduplicate and sort by modification time (newest first)
-    unique = {}
-    for c in candidates:
-        try:
-            unique[str(c.resolve())] = c
-        except Exception:
-            unique[str(c)] = c
-
-    candidates = list(unique.values())
-    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
-
-    if candidates:
-        chosen = candidates[0]
-        logger.info(f"Discovered Marker output at {chosen}")
-        # Ensure output dir exists and move/copy file to OUTPUTS_DIR if not already there
-        try:
-            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-            dest = OUTPUTS_DIR / chosen.name
-            if chosen.resolve() != dest.resolve():
-                # Move the file so future runs are predictable
-                try:
-                    chosen.replace(dest)
-                    logger.info(f"Moved output {chosen} -> {dest}")
-                except Exception:
-                    # fallback to copy if replace fails
-                    import shutil
-
-                    shutil.copy2(chosen, dest)
-                    logger.info(f"Copied output {chosen} -> {dest}")
-            return dest
-        except Exception as e:
-            logger.error(f"Failed to relocate discovered output: {e}")
-            return chosen
-
-    # Nothing found
-    logger.error("Marker finished but no markdown output discovered; stdout/stderr below:\n%s", text)
-    raise MarkerError(f"Expected output {out_path} not found after Marker run")
+def _query_nvidia_smi() -> List[Tuple[int, int, int, int]]:

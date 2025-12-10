@@ -70,11 +70,12 @@ def _convert_pdf_to_images(pdf_path: Path, output_dir: Path) -> List[Path]:
         raise MarkerError(f"Failed to convert PDF to images: {str(e)}")
 
 
-def _process_image_with_marker(image_path: Path) -> str:
+def _process_image_with_marker(image_path: Path, output_dir: Path) -> str:
     """Process single image with marker_single and return extracted markdown content.
     
     Args:
         image_path: Path to image file
+        output_dir: Directory where marker should save outputs
     
     Returns:
         Extracted markdown content as string
@@ -86,7 +87,7 @@ def _process_image_with_marker(image_path: Path) -> str:
     
     try:
         logger.info(f"Processing image with marker_single: {image_path}")
-        output_path = run_marker_for_chunk(image_path)
+        output_path = run_marker_for_chunk(image_path, output_dir=output_dir)
         
         # Read the markdown output
         if not output_path.exists():
@@ -232,10 +233,13 @@ def convert_pdf_and_process(
         logger.info("Processing extracted images with marker_single")
         contents: List[Tuple[Path, str]] = []
         
+        # Ensure document output directory exists before processing
+        doc_output_dir.mkdir(parents=True, exist_ok=True)
+        
         for idx, image_path in enumerate(image_paths, 1):
             logger.info(f"Processing image {idx}/{len(image_paths)}: {image_path.name}")
             try:
-                markdown_content = _process_image_with_marker(image_path)
+                markdown_content = _process_image_with_marker(image_path, output_dir=doc_output_dir)
                 contents.append((image_path, markdown_content))
             except MarkerError as e:
                 logger.warning(f"Failed to process image {image_path}: {e}")
@@ -247,7 +251,6 @@ def convert_pdf_and_process(
         combined_content = _combine_markdown_content(contents, pdf_path.name)
         
         # Step 4: Save combined markdown inside document folder
-        doc_output_dir.mkdir(parents=True, exist_ok=True)
         output_path = doc_output_dir / f"{pdf_path.stem}.md"
         final_path = _save_combined_markdown(combined_content, output_path)
         
