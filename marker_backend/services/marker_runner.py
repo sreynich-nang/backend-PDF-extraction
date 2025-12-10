@@ -143,6 +143,9 @@ def run_marker_for_chunk(chunk_path: Path, output_dir: Path = None) -> Path:
     # Nothing found
     logger.error("Marker finished but no markdown output discovered; stdout/stderr below:\n%s", text)
     raise MarkerError(f"Expected markdown output not found after Marker run for {chunk_path}")
+
+
+def _query_nvidia_smi() -> List[Tuple[int, int, int, int]]:
     """Return list of tuples (index, temp_c, mem_total_mb, mem_used_mb) for each GPU.
     If nvidia-smi is not available or fails, return empty list.
     """
@@ -214,6 +217,3 @@ def wait_for_gpu_ready(timeout: int = GPU_WAIT_TIMEOUT_SEC, poll: int = GPU_POLL
             logger.error(msg)
             raise MarkerError(msg)
         time.sleep(poll)
-
-
-def _query_nvidia_smi() -> List[Tuple[int, int, int, int]]:
