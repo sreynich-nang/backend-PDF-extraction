@@ -45,11 +45,14 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.info(f"Processing produced output file: {output}")    
     
         elapsed = time.time() - start    
-    
+        
+        # Extract document name for download endpoint
+        doc_name = Path(output).stem
+        
         return UploadResponse(    
             status="success",    
             filename=saved_path.name,    
-            merged_path=str(output),  
+            merged_path=doc_name,  # Return just the document name for easy download
             processing_time_seconds=round(elapsed, 2),    
         )    
     
@@ -61,8 +64,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))    
     except Exception as e:    
         logger.exception("Unexpected error processing upload")    
-        raise HTTPException(status_code=500, detail=str(e))    
-    
+        raise HTTPException(status_code=500, detail=str(e))
     
 # @router.get("/download/{filename:path}")    
 # def download(filename: str):    
@@ -74,42 +76,53 @@ async def upload_pdf(file: UploadFile = File(...)):
 def download(filename: str):    
     """Download markdown file from processed documents.
     
-    Handles:
-    - Full paths from merged_path in upload response
-    - Just the document name (stem)
-    - URLs with document name and .md extension
+    Handles both upload types:
+    - PDF uploads: outputs/CAM102025/CAM102025.md
+    - Image uploads: outputs/Screenshot 2025-12-08 164332/Screenshot 2025-12-08 164332/Screenshot 2025-12-08 164332.md
+    
+    Parameters:
+    - filename: Can be the document name or the full relative path to the markdown file
     """
-    # If it's a full path, try to use it directly
-    potential_path = Path(filename)
-    if potential_path.exists():
-        logger.info(f"Found file at direct path: {potential_path}")
-        return FileResponse(potential_path, filename=potential_path.name, media_type="text/markdown")
+    filename = filename.strip()
+    logger.info(f"Download request for: {filename}")
     
-    # Extract the document name (stem) from the filename
-    # Handle cases like "document_name.md" or full nested paths
+    # Extract document name (the stem, removing any extension)
+    # For "Screenshot 2025-12-08 164332.md" -> "Screenshot 2025-12-08 164332"
+    # For full path like "Screenshot 2025-12-08 164332/Screenshot 2025-12-08 164332/Screenshot 2025-12-08 164332.md"
+    # Extract just "Screenshot 2025-12-08 164332"
     doc_name = Path(filename).stem
+    if not doc_name:
+        doc_name = Path(filename).name
     
-    # Try PDF structure first (direct file in outputs/)
-    path = OUTPUTS_DIR / f"{doc_name}.md"
-    if path.exists():
-        logger.info(f"Found markdown at PDF path: {path}")
-        return FileResponse(path, filename=path.name, media_type="text/markdown")
+    logger.info(f"Extracted document name: {doc_name}")
     
-    # Try image structure (nested in document folder)
-    path = OUTPUTS_DIR / doc_name / f"{doc_name}.md"
-    if path.exists():
-        logger.info(f"Found markdown at image path: {path}")
-        return FileResponse(path, filename=path.name, media_type="text/markdown")
+    # Strategy 1: PDF structure - outputs/CAM102025/CAM102025.md (root level in doc folder)
+    pdf_path = OUTPUTS_DIR / doc_name / f"{doc_name}.md"
+    if pdf_path.exists():
+        logger.info(f"Found markdown at PDF path: {pdf_path}")
+        return FileResponse(pdf_path, filename=pdf_path.name, media_type="text/markdown")
     
-    # Try with original filename as directory name
-    path = OUTPUTS_DIR / filename / f"{filename}.md"
-    if path.exists():
-        logger.info(f"Found markdown with filename as directory: {path}")
-        return FileResponse(path, filename=path.name, media_type="text/markdown")
+    # Strategy 2: Image structure - outputs/Screenshot.../Screenshot.../Screenshot....md (deeply nested)
+    image_path = OUTPUTS_DIR / doc_name / doc_name / f"{doc_name}.md"
+    if image_path.exists():
+        logger.info(f"Found markdown at image path: {image_path}")
+        return FileResponse(image_path, filename=image_path.name, media_type="text/markdown")
     
-    # Neither path exists
-    logger.warning(f"Markdown file not found for: {filename}")
-    raise HTTPException(status_code=404, detail="Markdown file not found")
+    # Strategy 3: Direct file in outputs/ (legacy structure)
+    direct_path = OUTPUTS_DIR / f"{doc_name}.md"
+    if direct_path.exists():
+        logger.info(f"Found markdown at direct path: {direct_path}")
+        return FileResponse(direct_path, filename=direct_path.name, media_type="text/markdown")
+    
+    # Log available directories for debugging
+    logger.warning(f"Markdown file not found for document: {doc_name}")
+    try:
+        available = list(OUTPUTS_DIR.iterdir())
+        logger.warning(f"Available items in outputs/: {[item.name for item in available]}")
+    except Exception as e:
+        logger.error(f"Could not list outputs directory: {e}")
+    
+    raise HTTPException(status_code=404, detail=f"Markdown file not found for document: {doc_name}")
 
 
 @router.post("/filter_tables", response_model=TableExtractionResponse)
