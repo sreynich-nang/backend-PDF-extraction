@@ -74,24 +74,41 @@ async def upload_pdf(file: UploadFile = File(...)):
 def download(filename: str):    
     """Download markdown file from processed documents.
     
-    Handles two output structures:
-    - PDF uploads: outputs/document_name.md
-    - Image uploads: outputs/document_name/document_name.md
+    Handles:
+    - Full paths from merged_path in upload response
+    - Just the document name (stem)
+    - URLs with document name and .md extension
     """
+    # If it's a full path, try to use it directly
+    potential_path = Path(filename)
+    if potential_path.exists():
+        logger.info(f"Found file at direct path: {potential_path}")
+        return FileResponse(potential_path, filename=potential_path.name, media_type="text/markdown")
+    
+    # Extract the document name (stem) from the filename
+    # Handle cases like "document_name.md" or full nested paths
+    doc_name = Path(filename).stem
+    
     # Try PDF structure first (direct file in outputs/)
-    path = OUTPUTS_DIR / f"{filename}.md"
+    path = OUTPUTS_DIR / f"{doc_name}.md"
     if path.exists():
         logger.info(f"Found markdown at PDF path: {path}")
         return FileResponse(path, filename=path.name, media_type="text/markdown")
     
     # Try image structure (nested in document folder)
-    path = OUTPUTS_DIR / filename / f"{filename}.md"
+    path = OUTPUTS_DIR / doc_name / f"{doc_name}.md"
     if path.exists():
         logger.info(f"Found markdown at image path: {path}")
         return FileResponse(path, filename=path.name, media_type="text/markdown")
     
+    # Try with original filename as directory name
+    path = OUTPUTS_DIR / filename / f"{filename}.md"
+    if path.exists():
+        logger.info(f"Found markdown with filename as directory: {path}")
+        return FileResponse(path, filename=path.name, media_type="text/markdown")
+    
     # Neither path exists
-    logger.warning(f"Markdown file not found for document: {filename}")
+    logger.warning(f"Markdown file not found for: {filename}")
     raise HTTPException(status_code=404, detail="Markdown file not found")
 
 
