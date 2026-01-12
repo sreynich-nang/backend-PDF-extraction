@@ -77,14 +77,33 @@ def extract_and_save_tables(
 ):
     """High-level helper to extract tables for a processed document and save them as CSV.
 
-    Marker output markdown expected at: outputs_dir / document_name / document_name.md
+    Searches for markdown file in multiple possible locations:
+    1. outputs_dir / document_name / document_name.md (PDF structure)
+    2. outputs_dir / document_name / document_name / document_name.md (Image nested structure)
+    3. outputs_dir / document_name.md (Direct structure)
+    
     If csv_base_dir provided, CSV files stored under csv_base_dir / document_name.
     Otherwise defaults to outputs_dir / document_name / tables_csv_<document_name>.
     Returns tuple (markdown_path, tables_list, csv_files_list, csv_folder_path)
     """
-    md_path = outputs_dir / document_name / f"{document_name}.md"
-    if not md_path.exists():
-        raise FileNotFoundError(f"Processed markdown not found for document '{document_name}': {md_path}")
+    # Try multiple possible markdown locations
+    possible_paths = [
+        outputs_dir / document_name / f"{document_name}.md",  # PDF structure
+        outputs_dir / document_name / document_name / f"{document_name}.md",  # Image nested structure
+        outputs_dir / f"{document_name}.md",  # Direct structure
+    ]
+    
+    md_path = None
+    for path in possible_paths:
+        if path.exists():
+            md_path = path
+            break
+    
+    if md_path is None:
+        raise FileNotFoundError(
+            f"Processed markdown not found for document '{document_name}'. "
+            f"Searched: {possible_paths}"
+        )
 
     dfs = extract_tables_as_dataframes(md_path)
     if csv_base_dir:
