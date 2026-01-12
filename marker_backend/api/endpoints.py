@@ -126,31 +126,31 @@ def download(filename: str):
 
 
 @router.post("/filter_tables", response_model=TableExtractionResponse)
-async def filter_tables(document: str, sheets_per_file: int = 30, store_in_filters: bool = False):
-    """Extract tables from a processed document's markdown and save Excel batches.
+async def filter_tables(document: str, store_in_filters: bool = False):
+    """Extract tables from a processed document's markdown and save as individual CSV files.
 
+    One CSV file per table: table_1.csv, table_2.csv, etc.
     Expects marker output folder structure: outputs/<document>/<document>.md
-    Returns metadata including created Excel files.
+    Returns metadata including created CSV files.
     """
     ensure_dirs()
     start = time.time()
     try:
         from ..services.table_extractor import extract_and_save_tables
-        excel_base_dir = FILTERS_DIR if store_in_filters else None
-        md_path, dfs, excel_files, excel_folder = extract_and_save_tables(
+        csv_base_dir = FILTERS_DIR if store_in_filters else None
+        md_path, dfs, csv_files, csv_folder = extract_and_save_tables(
             document,
             OUTPUTS_DIR,
-            sheets_per_file=sheets_per_file,
-            excel_base_dir=excel_base_dir,
+            csv_base_dir=csv_base_dir,
         )
-        logger.info(f"Extracted {len(dfs)} tables for document '{document}' into {excel_folder}")
+        logger.info(f"Extracted {len(dfs)} tables for document '{document}' into {csv_folder}")
         return TableExtractionResponse(
             status="success",
             document=document,
             markdown_path=str(md_path),
             tables_count=len(dfs),
-            excel_folder=str(excel_folder),
-            excel_files=[str(p) for p in excel_files],
+            excel_folder=str(csv_folder),
+            excel_files=[str(p) for p in csv_files],
         )
     except FileNotFoundError as e:
         logger.exception("Markdown file not found for table extraction")
@@ -161,15 +161,15 @@ async def filter_tables(document: str, sheets_per_file: int = 30, store_in_filte
     
 @router.get("/download_table")
 def download_table(document: str, filename: str, store_in_filters: bool = False):
-    """Download a generated Excel table batch for a document.
+    """Download a generated CSV table file for a document.
 
     Parameters:
     - document: base document name (folder and markdown source name)
-    - filename: Excel file name (e.g. `tables_1.xlsx`)
+    - filename: CSV file name (e.g. `table_1.csv`)
     - store_in_filters: if true, look under `filters/<document>/`, else under
-      `outputs/<document>/tables_xlsx_<document>/`.
+      `outputs/<document>/tables_csv_<document>/`.
 
-    Returns the Excel file or 404 if not found. Rejects path traversal attempts.
+    Returns the CSV file or 404 if not found. Rejects path traversal attempts.
     """
     ensure_dirs()
     # Basic traversal protection
@@ -179,15 +179,15 @@ def download_table(document: str, filename: str, store_in_filters: bool = False)
     if store_in_filters:
         base_dir = FILTERS_DIR / document
     else:
-        base_dir = OUTPUTS_DIR / document / f"tables_xlsx_{document}"
+        base_dir = OUTPUTS_DIR / document / f"tables_csv_{document}"
 
     path = base_dir / filename
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Excel file not found")
+        raise HTTPException(status_code=404, detail="CSV file not found")
 
-    logger.info(f"Downloading Excel table file {path}")
+    logger.info(f"Downloading CSV table file {path}")
     return FileResponse(
         path,
         filename=path.name,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        media_type="text/csv",
     )
