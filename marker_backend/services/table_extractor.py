@@ -16,6 +16,7 @@ def extract_tables_as_dataframes(md_file_path: Path) -> List[pd.DataFrame]:
     """Extract markdown tables from a file and convert them into DataFrames.
 
     Returns a list of DataFrames. Any table that fails to parse is skipped.
+    Handles multi-row headers gracefully.
     """
     if not md_file_path.exists():
         raise FileNotFoundError(f"Markdown file not found: {md_file_path}")
@@ -24,22 +25,32 @@ def extract_tables_as_dataframes(md_file_path: Path) -> List[pd.DataFrame]:
     tables_md = [m.group(0) for m in TABLE_REGEX.finditer(content)]
 
     dataframes: List[pd.DataFrame] = []
+
     for table_md in tables_md:
-        cleaned_table = "\n".join(
-            line for line in table_md.splitlines()
-            if not SEPARATOR_LINE_REGEX.match(line)
-        ).strip()
-        if not cleaned_table:
+        # Remove separator lines like |----|----|
+        lines = [line for line in table_md.splitlines() if not SEPARATOR_LINE_REGEX.match(line)]
+        if not lines:
             continue
+
+        # Detect if first row is mostly empty (common in multi-row headers)
+        first_row = [cell.strip() for cell in lines[0].split("|")]
+        empty_count = sum(1 for cell in first_row if cell == "")
+        if empty_count >= len(first_row) / 2 and len(lines) > 1:
+            header_row = 1  # use the second row as header
+        else:
+            header_row = 0  # first row is fine
+
+        cleaned_table = "\n".join(lines).strip()
         try:
-            df = pd.read_csv(StringIO(cleaned_table), sep="|", engine="python")
-            df = df.dropna(axis=1, how="all")
+            df = pd.read_csv(StringIO(cleaned_table), sep="|", engine="python", header=header_row)
+            df = df.dropna(axis=1, how="all")  # remove completely empty columns
             df.columns = df.columns.str.strip()
-            df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
+            df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
             dataframes.append(df)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(f"Failed to parse a table chunk: {e}")
             continue
+
     logger.info(f"Extracted {len(dataframes)} tables from {md_file_path.name}")
     return dataframes
 
