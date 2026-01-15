@@ -1,58 +1,85 @@
 import re
 from pathlib import Path
-from io import StringIO
-from typing import List
+from typing import List, Tuple, Optional
 import pandas as pd
+import logging
 
-from ..core.logger import get_logger
+# Fallback logger if not using your package
+def get_logger(name: str):
+    logger = logging.getLogger(name)
+    if not logger.hasHandlers():
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    return logger
 
 logger = get_logger(__name__)
 
-TABLE_REGEX = re.compile(r"(\|.*\|\s*\n)+", re.MULTILINE)
-SEPARATOR_LINE_REGEX = re.compile(r'^\s*\|?\s*:?-{3,}', re.IGNORECASE)
+def extract_tables_as_dataframes(markdown_path: Path) -> List[pd.DataFrame]:
+    """Extract all markdown tables from a file into a list of DataFrames."""
+    content = markdown_path.read_text(encoding="utf-8")
+    
+    # Regex to match lines starting with | and ending with |
+    table_pattern = r"^\|(.+)\|$"
+    lines = content.split("\n")
+    
+    tables: List[pd.DataFrame] = []
+    current_table_lines: List[str] = []
+    in_table = False
+    
+    for line in lines:
+        if re.match(table_pattern, line.strip()):
+            in_table = True
+            current_table_lines.append(line)
+        elif in_table and line.strip():
+            if not re.match(table_pattern, line.strip()):
+                # End of table
+                if current_table_lines:
+                    df = _parse_markdown_table(current_table_lines)
+                    if df is not None and len(df) > 0:
+                        tables.append(df)
+                current_table_lines = []
+                in_table = False
+        elif in_table and not line.strip():
+            # Empty line might still be in table
+            pass
+    
+    # Add last table if file ends with a table
+    if current_table_lines:
+        df = _parse_markdown_table(current_table_lines)
+        if df is not None and len(df) > 0:
+            tables.append(df)
+    
+    return tables
 
 
-def extract_tables_as_dataframes(md_file_path: Path) -> List[pd.DataFrame]:
-    """Extract markdown tables from a file and convert them into DataFrames.
-
-    Returns a list of DataFrames. Any table that fails to parse is skipped.
-    Handles multi-row headers gracefully.
-    """
-    if not md_file_path.exists():
-        raise FileNotFoundError(f"Markdown file not found: {md_file_path}")
-
-    content = md_file_path.read_text(encoding="utf-8")
-    tables_md = [m.group(0) for m in TABLE_REGEX.finditer(content)]
-
-    dataframes: List[pd.DataFrame] = []
-
-    for table_md in tables_md:
-        # Remove separator lines like |----|----|
-        lines = [line for line in table_md.splitlines() if not SEPARATOR_LINE_REGEX.match(line)]
-        if not lines:
+def _parse_markdown_table(lines: List[str]) -> Optional[pd.DataFrame]:
+    """Parse markdown table lines into a pandas DataFrame."""
+    if len(lines) < 2:
+        return None
+    
+    # Header
+    header_line = lines[0]
+    headers = [h.strip() for h in header_line.split("|")[1:-1]]
+    
+    # Skip separator (usually second line) and read data
+    data_rows: List[List[str]] = []
+    for line in lines[2:]:
+        if not line.strip():
             continue
-
-        # Detect if first row is mostly empty (common in multi-row headers)
-        first_row = [cell.strip() for cell in lines[0].split("|")]
-        empty_count = sum(1 for cell in first_row if cell == "")
-        if empty_count >= len(first_row) / 2 and len(lines) > 1:
-            header_row = 1  # use the second row as header
-        else:
-            header_row = 0  # first row is fine
-
-        cleaned_table = "\n".join(lines).strip()
-        try:
-            df = pd.read_csv(StringIO(cleaned_table), sep="|", engine="python", header=header_row)
-            df = df.dropna(axis=1, how="all")  # remove completely empty columns
-            df.columns = df.columns.str.strip()
-            df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-            dataframes.append(df)
-        except Exception as e:
-            logger.warning(f"Failed to parse a table chunk: {e}")
-            continue
-
-    logger.info(f"Extracted {len(dataframes)} tables from {md_file_path.name}")
-    return dataframes
+        cells = [c.strip() for c in line.split("|")[1:-1]]
+        if len(cells) == len(headers):
+            data_rows.append(cells)
+    
+    if not data_rows:
+        return None
+    
+    df = pd.DataFrame(data_rows, columns=headers)
+    return df
 
 
 def save_tables_as_csv(
@@ -60,16 +87,11 @@ def save_tables_as_csv(
     md_file_path: Path,
     output_dir: Path,
 ) -> List[Path]:
-    """Save each DataFrame as a separate CSV file.
-
-    Files are written into `output_dir` which is created if absent.
-    One CSV file per table: table_1.csv, table_2.csv, etc.
-    Returns list of created CSV file paths.
-    """
+    """Save each DataFrame as a separate CSV file."""
     output_dir.mkdir(parents=True, exist_ok=True)
     created: List[Path] = []
-    total = len(dfs)
-    if total == 0:
+    
+    if not dfs:
         logger.info("No tables to save; skipping CSV generation.")
         return created
 
@@ -84,27 +106,16 @@ def save_tables_as_csv(
 def extract_and_save_tables(
     document_name: str,
     outputs_dir: Path,
-    csv_base_dir: Path | None = None,
-):
-    """High-level helper to extract tables for a processed document and save them as CSV.
-
-    Searches for markdown file in multiple possible locations:
-    1. outputs_dir / document_name / document_name.md (PDF structure)
-    2. outputs_dir / document_name / document_name / document_name.md (Image nested structure)
-    3. outputs_dir / document_name.md (Direct structure)
-    
-    If csv_base_dir provided, CSV files stored under csv_base_dir / document_name.
-    Otherwise defaults to outputs_dir / document_name / tables_csv_<document_name>.
-    Returns tuple (markdown_path, tables_list, csv_files_list, csv_folder_path)
-    """
-    # Try multiple possible markdown locations
+    csv_base_dir: Optional[Path] = None,
+) -> Tuple[Path, List[pd.DataFrame], List[Path], Path]:
+    """Extract tables from markdown and save them as CSVs."""
     possible_paths = [
-        outputs_dir / document_name / f"{document_name}.md",  # PDF structure
-        outputs_dir / document_name / document_name / f"{document_name}.md",  # Image nested structure
-        outputs_dir / f"{document_name}.md",  # Direct structure
+        outputs_dir / document_name / f"{document_name}.md",
+        outputs_dir / document_name / document_name / f"{document_name}.md",
+        outputs_dir / f"{document_name}.md",
     ]
     
-    md_path = None
+    md_path: Optional[Path] = None
     for path in possible_paths:
         if path.exists():
             md_path = path
@@ -113,13 +124,12 @@ def extract_and_save_tables(
     if md_path is None:
         raise FileNotFoundError(
             f"Processed markdown not found for document '{document_name}'. "
-            f"Searched: {possible_paths}"
+            f"Searched paths: {possible_paths}"
         )
 
     dfs = extract_tables_as_dataframes(md_path)
-    if csv_base_dir:
-        csv_folder = csv_base_dir / document_name
-    else:
-        csv_folder = outputs_dir / document_name / f"tables_csv_{document_name}"
+    
+    csv_folder = csv_base_dir / document_name if csv_base_dir else outputs_dir / document_name / f"tables_csv_{document_name}"
     csv_files = save_tables_as_csv(dfs, md_path, csv_folder)
+    
     return md_path, dfs, csv_files, csv_folder
