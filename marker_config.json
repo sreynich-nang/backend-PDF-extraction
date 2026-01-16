@@ -1,9 +1,0 @@
-{  
-  "recognition_batch_size": 160,  
-  "table_rec_batch_size": 28,  
-  "detection_batch_size": 80,  
-  "max_rows_per_batch": 60,  
-  "max_table_rows": 175,  
-  "max_table_iterations": 2,
-  "gemini_model_name": "gemini-2.0-flash-exp"  
-}
