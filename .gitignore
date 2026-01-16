@@ -7,23 +7,6 @@ __pycache__/
 # Ignore initialization files (optional)
 __init__.py
 
-# Ignore virtual environments
-venv/
-env/
+# Ignore log and temp
 logs/
 temp/
-
-*.pdf
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
-*.tiff
-*.tif
-*.svg
-*.webp
-*.heic
-*.heif
-
-marker_config.json
