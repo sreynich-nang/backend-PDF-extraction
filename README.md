@@ -17,7 +17,15 @@ The system is optimized for **GPU acceleration** but supports CPU execution when
 * Optionally extract tables into CSV for analytics workflows
 
 ---
-
+### Demo
+#### English Version
+![pic_eng](images/pic_eng.jpg)
+![pic1_eng](images/pic1_eng.jpg)
+![pic2_eng](images/pic2_eng.jpg)
+#### Khmer Version
+![pic_khm](images/pic_khm.jpg)
+![pic1_khm](images/pic1_khm.jpg)
+![pic2_khm](images/pic2_khm.jpg)
 ## 3. High-Level Architecture
 
 ```
